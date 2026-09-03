@@ -1,18 +1,61 @@
 const WebSocket = require('ws');
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 app.use(express.static(path.join(__dirname)));
 app.use((req, res, next) => { res.header('Access-Control-Allow-Origin', '*'); next(); });
 
 const PORT = process.env.PORT || 3001;
+const DATA_FILE = path.join(__dirname, 'history.json');
 
-// ===== WEBSOCKET =====
-let lichSu = [];
+// ===== THU THẬP & LƯU TRỮ DỮ LIỆU =====
+let lichSuMap = new Map(); // Dùng Map theo Phien để tra cứu O(1) và tránh trùng lặp
+let lichSu = [];           // Mảng sắp xếp theo phiên mới nhất lên đầu
 let currentSessionId = null;
 let ws = null, pingInterval = null, reconnectTimeout = null, staleTimer = null;
 
+// Khởi tạo đọc dữ liệu đã lưu từ đĩa (nếu có)
+function loadDataFromFile() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+      if (raw.trim()) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(item => {
+            if (item && item.Phien) lichSuMap.set(item.Phien, item);
+          });
+          syncArrayFromMap();
+          console.log(`[💾] Đã khôi phục ${lichSu.length} phiên dữ liệu từ ${DATA_FILE}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[❌] Lỗi đọc file data:', e.message);
+  }
+}
+
+// Đồng bộ từ Map ra Array và ghi xuống file JSON
+function saveDataToFile() {
+  try {
+    syncArrayFromMap();
+    fs.writeFileSync(DATA_FILE, JSON.stringify(lichSu, null, 2), 'utf-8');
+    console.log(`[💾] Đã lưu ${lichSu.length} phiên vào file ${DATA_FILE}`);
+  } catch (e) {
+    console.error('[❌] Lỗi ghi file data:', e.message);
+  }
+}
+
+function syncArrayFromMap() {
+  lichSu = Array.from(lichSuMap.values()).sort((a, b) => b.Phien - a.Phien);
+}
+
+// Đọc dữ liệu sẵn có lúc server khởi động
+loadDataFromFile();
+
+// ===== WEBSOCKET CONNECT =====
 const WS_URL = "wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg9ZFtbx3rRu9mX_hZMZ_m5gMNhkw0";
 const WS_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -30,15 +73,15 @@ function connectWS() {
   ws = new WebSocket(WS_URL, { headers: WS_HEADERS });
 
   ws.on('open', () => {
-    console.log('[✅] WebSocket connected');
+    console.log('[✅] WebSocket connected - Bắt đầu thu thập dữ liệu...');
     INIT_MSGS.forEach((msg, i) => setTimeout(() => { if (ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(msg)); }, i*600));
     clearInterval(pingInterval);
     pingInterval = setInterval(() => { if (ws.readyState===WebSocket.OPEN) ws.ping(); }, 10000);
     clearTimeout(staleTimer);
-    staleTimer = setTimeout(() => { console.log('[⚠️] Stale - reconnect'); ws.close(); }, 90000);
+    staleTimer = setTimeout(() => { console.log('[⚠️] Stale - reconnecting...'); ws.close(); }, 90000);
   });
 
-  ws.on('pong', () => console.log('[📶] Ping OK'));
+  ws.on('pong', () => console.log('[📶] Connection Alive'));
 
   ws.on('message', (raw) => {
     try {
@@ -46,40 +89,61 @@ function connectWS() {
       if (!Array.isArray(data) || typeof data[1] !== 'object') return;
       const { cmd, sid, d1, d2, d3 } = data[1];
 
+      // Nhận lô lịch sử ban đầu từ game (cmd 1005)
       if (cmd === 1005 && data[1].htr) {
-        const newData = data[1].htr.map(p => {
-          const t = p.d1+p.d2+p.d3;
-          return { Phien:p.sid, Xuc_xac_1:p.d1, Xuc_xac_2:p.d2, Xuc_xac_3:p.d3, Tong:t, Ket_qua:t>10?'Tài':'Xỉu' };
-        }).reverse();
-        const existingPhiens = new Set(lichSu.map(x => x.Phien));
-        const toAdd = newData.filter(x => !existingPhiens.has(x.Phien));
-        if (toAdd.length > 0) {
-          lichSu = [...lichSu, ...toAdd].sort((a,b) => b.Phien - a.Phien).slice(0, 500);
+        let addedCount = 0;
+        data[1].htr.forEach(p => {
+          if (!lichSuMap.has(p.sid)) {
+            const t = p.d1 + p.d2 + p.d3;
+            lichSuMap.set(p.sid, {
+              Phien: p.sid,
+              Xuc_xac_1: p.d1,
+              Xuc_xac_2: p.d2,
+              Xuc_xac_3: p.d3,
+              Tong: t,
+              Ket_qua: t > 10 ? 'Tài' : 'Xỉu',
+              Created_at: new Date().toISOString()
+            });
+            addedCount++;
+          }
+        });
+        if (addedCount > 0) {
+          saveDataToFile();
+          console.log(`[📋] Đã thêm ${addedCount} phiên mới từ đợt khởi tạo htr`);
         }
-        console.log(`[📋] Lịch sử: ${lichSu.length} phiên`);
-        buildHistoricalPredictions();
-        runPrediction();
       }
 
+      // Cập nhật session ID đang chạy (cmd 1008)
       if (cmd === 1008 && sid) currentSessionId = sid;
 
+      // Nhận kết quả phiên mới vừa ra (cmd 1003)
       if (cmd === 1003 && d1 && d2 && d3) {
         clearTimeout(staleTimer);
         staleTimer = setTimeout(() => ws.close(), 90000);
-        const t = d1+d2+d3;
-        const entry = { Phien:currentSessionId, Xuc_xac_1:d1, Xuc_xac_2:d2, Xuc_xac_3:d3, Tong:t, Ket_qua:t>10?'Tài':'Xỉu' };
-        lichSu.unshift(entry);
-        if (lichSu.length > 500) lichSu.pop();
-        console.log(`[🎲] Phiên ${currentSessionId}: ${d1}-${d2}-${d3}=${t} (${entry.Ket_qua})`);
+
+        const targetPhien = currentSessionId || (lichSu.length > 0 ? lichSu[0].Phien + 1 : 1);
+        if (!lichSuMap.has(targetPhien)) {
+          const t = d1 + d2 + d3;
+          const entry = {
+            Phien: targetPhien,
+            Xuc_xac_1: d1,
+            Xuc_xac_2: d2,
+            Xuc_xac_3: d3,
+            Tong: t,
+            Ket_qua: t > 10 ? 'Tài' : 'Xỉu',
+            Created_at: new Date().toISOString()
+          };
+          lichSuMap.set(targetPhien, entry);
+          saveDataToFile();
+          console.log(`[🎲 MỚI] Phiên ${targetPhien}: ${d1}-${d2}-${d3} = ${t} (${entry.Ket_qua}) | Tổng tích lũy: ${lichSu.length} phiên`);
+        }
         currentSessionId = null;
-        updateResults();
-        setTimeout(runPrediction, 1500);
       }
-    } catch(e) { console.error('[❌] WS parse:', e.message); }
+    } catch(e) { console.error('[❌] WS parse error:', e.message); }
   });
 
   ws.on('close', (code) => {
-    console.log(`[🔌] Closed: ${code}`);
+    console.log(`[🔌] Connection closed: ${code}. Reconnecting in 2.5s...`);
     clearInterval(pingInterval); clearTimeout(staleTimer); clearTimeout(reconnectTimeout);
     reconnectTimeout = setTimeout(connectWS, 2500);
   });
@@ -87,199 +151,59 @@ function connectWS() {
   ws.on('error', (e) => { console.error('[❌] WS error:', e.message); try { ws.close(); } catch(_){} });
 }
 
-// ===== ALGORITHMS (Ensemble: Cầu Bệt + Math ML + N-Gram) =====
-const HISTORY_LENGTH = 300;
+// ===== API ENDPOINTS =====
 
-function predictBridge(arr) {
-  if (arr.length < 4) return null;
-  if (arr[0] === arr[1] && arr[1] === arr[2]) return { predict: arr[0], name: 'Cầu Bệt' };
-  if (arr[0] !== arr[1] && arr[1] !== arr[2] && arr[2] !== arr[3]) return { predict: arr[0] === 'Tài' ? 'Xỉu' : 'Tài', name: 'Cầu 1-1' };
-  if (arr[0] === arr[1] && arr[2] === arr[3] && arr[0] !== arr[2]) return { predict: arr[0] === 'Tài' ? 'Xỉu' : 'Tài', name: 'Cầu 2-2' };
-  return null;
-}
-
-function predictDiceMath(dataObjects) {
-  if (dataObjects.length < 10) return { predict: null, accuracy: 0 };
-  let bestAcc = 0, bestRule = null;
-  const formulas = [
-    d => d[0]+d[1]+d[2],
-    d => Math.abs(d[0]-d[1])+d[2],
-    d => (d[0]*d[1])+d[2],
-    d => d[0]*d[1]*d[2]
-  ];
-  const rules = [
-    val => val%2===0 ? 'Tài' : 'Xỉu',
-    val => val%2!==0 ? 'Tài' : 'Xỉu',
-    val => val>10 ? 'Tài' : 'Xỉu',
-    val => val<=10 ? 'Tài' : 'Xỉu'
-  ];
-  for (const f of formulas) for (const r of rules) {
-    let correct=0, total=0;
-    for (let i=1; i<dataObjects.length; i++) {
-      const d = dataObjects[i];
-      if (!d.Xuc_xac_1) continue;
-      total++;
-      if (r(f([d.Xuc_xac_1, d.Xuc_xac_2, d.Xuc_xac_3])) === dataObjects[i-1].Ket_qua) correct++;
-    }
-    if (total > 0 && (correct/total) > bestAcc) { bestAcc = correct/total; bestRule = { f, r }; }
+// Lấy lịch sử phiên thu thập được (Hỗ trợ phân trang/giới hạn bằng query ?limit=1000)
+app.get('/api/lichsu', (req, res) => {
+  const limit = parseInt(req.query.limit) || 0;
+  if (limit > 0) {
+    return res.json(lichSu.slice(0, limit));
   }
-  if (bestAcc < 0.55 || !bestRule || !dataObjects[0].Xuc_xac_1) return { predict: null, accuracy: bestAcc };
-  return {
-    predict: bestRule.r(bestRule.f([dataObjects[0].Xuc_xac_1, dataObjects[0].Xuc_xac_2, dataObjects[0].Xuc_xac_3])),
-    accuracy: bestAcc,
-    name: 'Math ML'
-  };
-}
+  res.json(lichSu);
+});
 
-function predictNGramFallback(arr) {
-  const tai = arr.filter(x => x === 'Tài').length;
-  const xiu = arr.filter(x => x === 'Xỉu').length;
-  if (tai > xiu) return { predict: 'Tài' };
-  if (xiu > tai) return { predict: 'Xỉu' };
-  return { predict: arr[0] };
-}
-
-function predictEnsemble(dataObjects, history) {
-  if (dataObjects.length < 4) return { predict: 'Tài', confidence: 50, algo: 'Khởi tạo', isReversing: false };
-  const txArray = dataObjects.map(x => x.Ket_qua);
-  const votes = { 'Tài': 0, 'Xỉu': 0 };
-  const activeAlgos = [];
-
-  const bridge = predictBridge(txArray);
-  if (bridge) { votes[bridge.predict] += 1.5; activeAlgos.push(bridge.name); }
-
-  const mathML = predictDiceMath(dataObjects);
-  if (mathML.predict) { votes[mathML.predict] += mathML.accuracy * 2; activeAlgos.push(`Math ML(${(mathML.accuracy*100).toFixed(0)}%)`); }
-
-  const ngram = predictNGramFallback(txArray);
-  votes[ngram.predict] += 1.0;
-  if (activeAlgos.length === 0) activeAlgos.push('N-Gram');
-
-  let rawPredict = votes['Tài'] > votes['Xỉu'] ? 'Tài' : 'Xỉu';
-  const totalWeights = votes['Tài'] + votes['Xỉu'];
-  let confidence = totalWeights > 0 ? (votes[rawPredict] / totalWeights) * 100 : 50;
-
-  let isReversing = false, finalPredict = rawPredict;
-  if (history && history.length >= 10) {
-    const wr = history.filter(x => x.kq === 'dung').length / history.length;
-    if (wr < 0.45) { isReversing = true; finalPredict = rawPredict === 'Tài' ? 'Xỉu' : 'Tài'; }
+app.get('/api/history', (req, res) => {
+  const limit = parseInt(req.query.limit) || 0;
+  if (limit > 0) {
+    return res.json(lichSu.slice(0, limit));
   }
+  res.json(lichSu);
+});
 
-  return { predict: finalPredict, confidence: parseFloat(confidence.toFixed(1)), algo: activeAlgos.join(' + '), isReversing };
-}
-
-// ===== BUILD HISTORICAL PREDICTIONS =====
-function buildHistoricalPredictions() {
-  if (lichSu.length < 20 || predictionHistory.length > 0) return;
-  console.log('[📊] Đang tạo lịch sử dự đoán...');
-  const built = [];
-  const limit = Math.min(lichSu.length - HISTORY_LENGTH, 500);
-  for (let i = 0; i < limit; i++) {
-    const trainData = lichSu.slice(i + 1, i + 1 + HISTORY_LENGTH);
-    if (trainData.length < 4) continue;
-    const ensemble = predictEnsemble(trainData, built);
-    const actual = lichSu[i];
-    const ok = ensemble.predict === actual.Ket_qua;
-    built.push({
-      phien: actual.Phien.toString(),
-      du_doan: ensemble.predict,
-      ti_le: ensemble.confidence.toFixed(0) + '%',
-      thuat_toan: ensemble.algo,
-      mo_ta: ensemble.algo,
-      kq: ok ? 'dung' : 'sai',
-      ket_qua: actual.Ket_qua,
-      xuc_xac: `${actual.Xuc_xac_1}-${actual.Xuc_xac_2}-${actual.Xuc_xac_3}`,
-      tong: actual.Tong.toString(),
-      isReversing: ensemble.isReversing,
-      timestamp: new Date().toISOString()
-    });
+// Tải file JSON đầy đủ dữ liệu về máy để phân tích
+app.get('/api/download', (req, res) => {
+  if (fs.existsSync(DATA_FILE)) {
+    return res.download(DATA_FILE, `sunwin_history_${Date.now()}.json`);
   }
-  predictionHistory = built.reverse();
-  console.log(`[📊] Đã tạo ${predictionHistory.length} phiên lịch sử`);
-}
+  res.status(444).json({ error: 'Chưa có dữ liệu nào được lưu' });
+});
 
-// ===== PREDICTION ENGINE =====
-let currentPrediction = null;
-let predictionHistory = [];
-let lastProcessedPhien = null;
-
-function updateResults() {
-  if (lichSu.length === 0) return;
-  for (const p of predictionHistory) {
-    if (p.kq !== 'dang_doi') continue;
-    const match = lichSu.find(h => h.Phien.toString() === p.phien);
-    if (!match) continue;
-    p.ket_qua = match.Ket_qua;
-    p.xuc_xac = `${match.Xuc_xac_1}-${match.Xuc_xac_2}-${match.Xuc_xac_3}`;
-    p.tong = match.Tong.toString();
-    const ok = p.du_doan === match.Ket_qua;
-    p.kq = ok ? 'dung' : 'sai';
-    console.log(`${ok?'✅':'❌'} Phiên #${p.phien}: ${ok?'ĐÚNG':'SAI'} - Dự đoán ${p.du_doan}, thực tế ${match.Ket_qua}`);
-  }
-}
-
-function runPrediction() {
-  if (lichSu.length === 0) return;
-  const currentPhien = lichSu[0].Phien;
-  if (currentPhien === lastProcessedPhien) return;
-
-  const trainData = lichSu.slice(0, HISTORY_LENGTH);
-  const ensemble = predictEnsemble(trainData, predictionHistory);
-  const nextPhien = currentPhien + 1;
-
-  const done = predictionHistory.filter(p => p.kq !== 'dang_doi');
-  const correct = done.filter(p => p.kq === 'dung').length;
-  const winRate = done.length > 0 ? ((correct / done.length) * 100).toFixed(1) : '0';
-
-  const newPred = {
-    phien: nextPhien.toString(),
-    du_doan: ensemble.predict,
-    ti_le: ensemble.confidence.toFixed(0) + '%',
-    thuat_toan: ensemble.algo,
-    mo_ta: ensemble.algo + (ensemble.isReversing ? ' [ĐẢO CHIỀU]' : ''),
-    isReversing: ensemble.isReversing,
-    winRate: winRate + '%',
-    kq: 'dang_doi', ket_qua: '---', xuc_xac: '---', tong: '---',
-    timestamp: new Date().toISOString()
-  };
-
-  currentPrediction = newPred;
-  predictionHistory.unshift(newPred);
-  if (predictionHistory.length > 500) predictionHistory = predictionHistory.slice(0, 500);
-  lastProcessedPhien = currentPhien;
-  console.log(`\n🎲 Dự đoán phiên #${nextPhien}: ${ensemble.predict} (${ensemble.confidence.toFixed(0)}%) - ${ensemble.algo}${ensemble.isReversing?' [ĐẢO CHIỀU]':''}`);
-  console.log(`   📊 Winrate: ${winRate}% (${correct}/${done.length})`);
-}
-
-// ===== API =====
-app.get('/api/prediction', (req,res) => res.json(currentPrediction||{phien:'0',du_doan:'dang_doi',ti_le:'0%',kq:'dang_doi'}));
-app.get('/api/prediction-history', (req,res) => res.json(predictionHistory));
-app.get('/api/lichsu', (req,res) => res.json(lichSu));
-app.get('/api/sunwin/prediction', (req,res) => res.json(currentPrediction||{phien:'0',du_doan:'dang_doi',ti_le:'0%',kq:'dang_doi'}));
-app.get('/api/sunwin/prediction-history', (req,res) => res.json(predictionHistory));
-app.get('/api/sunwin/history', (req,res) => res.json(lichSu));
-
-app.get('/api/stats', (req,res) => {
-  const done = predictionHistory.filter(p => p.kq !== 'dang_doi');
-  const correct = done.filter(p => p.kq === 'dung').length;
+// Thống kê tổng số lượng phiên thu thập được
+app.get('/api/stats', (req, res) => {
   res.json({
-    predictionStats: {
-      total: done.length, correct, wrong: done.length - correct,
-      accuracy: done.length > 0 ? ((correct/done.length)*100).toFixed(1)+'%' : '0%'
-    },
+    status: 'ACTIVE',
+    totalSessionsCollected: lichSu.length,
     latestSession: lichSu[0] || null,
-    currentPrediction
+    oldestSession: lichSu[lichSu.length - 1] || null,
+    wsConnected: ws ? ws.readyState === WebSocket.OPEN : false
   });
 });
 
-app.get('/', (req,res) => {
-  const accept = req.headers.accept || '';
-  if (accept.includes('text/html')) return res.sendFile(path.join(__dirname,'index.html'));
-  res.json({ message:'🎲 LC79 AI Prediction API', version:'3.0', algorithms:['Cầu Bệt/1-1/2-2','Math ML','N-Gram Ensemble','Tự động đảo chiều khi winrate < 45%'] });
+app.get('/', (req, res) => {
+  res.json({
+    message: '🎲 Sunwin Data Collector Service (Thu thập & Lưu trữ dữ liệu)',
+    totalSessionsCollected: lichSu.length,
+    latestSession: lichSu[0] || null,
+    endpoints: {
+      history: '/api/lichsu',
+      download: '/api/download',
+      stats: '/api/stats'
+    }
+  });
 });
 
-// ===== START =====
+// ===== START SERVER =====
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🎲 LC79 API chạy tại http://0.0.0.0:${PORT}`);
+  console.log(`\n🚀 Server Thu thập Dữ liệu Sunwin đang chạy tại http://0.0.0.0:${PORT}`);
   connectWS();
 });

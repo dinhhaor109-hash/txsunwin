@@ -121,7 +121,7 @@ function connectWS() {
         clearTimeout(staleTimer);
         staleTimer = setTimeout(() => ws.close(), 90000);
 
-        const targetPhien = currentSessionId || (lichSu.length > 0 ? lichSu[0].Phien + 1 : 1);
+        const targetPhien = sid || currentSessionId || (lichSu.length > 0 ? lichSu[0].Phien + 1 : 1);
         if (!lichSuMap.has(targetPhien)) {
           const t = d1 + d2 + d3;
           const entry = {

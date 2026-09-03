@@ -4,19 +4,26 @@ const path = require('path');
 const fs = require('fs');
 
 const app = express();
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname)));
 app.use((req, res, next) => { res.header('Access-Control-Allow-Origin', '*'); next(); });
 
 const PORT = process.env.PORT || 3001;
-const DATA_FILE = path.join(__dirname, 'history.json');
+
+// Hỗ trợ Railway Volume (Nếu set DATA_DIR=/data trên Railway thì dữ liệu lưu vĩnh viễn không bao giờ mất)
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+if (!fs.existsSync(DATA_DIR)) {
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch(e){}
+}
+const DATA_FILE = path.join(DATA_DIR, 'history.json');
 
 // ===== THU THẬP & LƯU TRỮ DỮ LIỆU =====
-let lichSuMap = new Map(); // Dùng Map theo Phien để tra cứu O(1) và tránh trùng lặp
-let lichSu = [];           // Mảng sắp xếp theo phiên mới nhất lên đầu
+let lichSuMap = new Map();
+let lichSu = [];
 let currentSessionId = null;
 let ws = null, pingInterval = null, reconnectTimeout = null, staleTimer = null;
 
-// Khởi tạo đọc dữ liệu đã lưu từ đĩa (nếu có)
+// Khôi phục dữ liệu từ file khi khởi động
 function loadDataFromFile() {
   try {
     if (fs.existsSync(DATA_FILE)) {
@@ -28,21 +35,23 @@ function loadDataFromFile() {
             if (item && item.Phien) lichSuMap.set(item.Phien, item);
           });
           syncArrayFromMap();
-          console.log(`[💾] Đã khôi phục ${lichSu.length} phiên dữ liệu từ ${DATA_FILE}`);
+          console.log(`[💾 KHÔI PHỤC THÀNH CÔNG] Đã tải ${lichSu.length} phiên dữ liệu từ: ${DATA_FILE}`);
         }
       }
+    } else {
+      console.log(`[ℹ️] Chưa có file dữ liệu tại ${DATA_FILE}, sẽ tự động tạo mới khi có phiên.`);
     }
   } catch (e) {
     console.error('[❌] Lỗi đọc file data:', e.message);
   }
 }
 
-// Đồng bộ từ Map ra Array và ghi xuống file JSON
+// Đồng bộ và ghi đĩa
 function saveDataToFile() {
   try {
     syncArrayFromMap();
     fs.writeFileSync(DATA_FILE, JSON.stringify(lichSu, null, 2), 'utf-8');
-    console.log(`[💾] Đã lưu ${lichSu.length} phiên vào file ${DATA_FILE}`);
+    console.log(`[💾 ĐÃ LƯU] Đã ghi ${lichSu.length} phiên vào: ${DATA_FILE}`);
   } catch (e) {
     console.error('[❌] Lỗi ghi file data:', e.message);
   }
@@ -52,7 +61,7 @@ function syncArrayFromMap() {
   lichSu = Array.from(lichSuMap.values()).sort((a, b) => b.Phien - a.Phien);
 }
 
-// Đọc dữ liệu sẵn có lúc server khởi động
+// Đọc dữ liệu sẵn có
 loadDataFromFile();
 
 // ===== WEBSOCKET CONNECT =====
@@ -73,7 +82,7 @@ function connectWS() {
   ws = new WebSocket(WS_URL, { headers: WS_HEADERS });
 
   ws.on('open', () => {
-    console.log('[✅] WebSocket connected - Bắt đầu thu thập dữ liệu...');
+    console.log('[✅] WebSocket connected - Đang thu thập dữ liệu...');
     INIT_MSGS.forEach((msg, i) => setTimeout(() => { if (ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(msg)); }, i*600));
     clearInterval(pingInterval);
     pingInterval = setInterval(() => { if (ws.readyState===WebSocket.OPEN) ws.ping(); }, 10000);
@@ -109,11 +118,10 @@ function connectWS() {
         });
         if (addedCount > 0) {
           saveDataToFile();
-          console.log(`[📋] Đã thêm ${addedCount} phiên mới từ đợt khởi tạo htr`);
+          console.log(`[📋] Nối thêm ${addedCount} phiên mới vào kho dữ liệu`);
         }
       }
 
-      // Cập nhật session ID đang chạy (cmd 1008)
       if (cmd === 1008 && sid) currentSessionId = sid;
 
       // Nhận kết quả phiên mới vừa ra (cmd 1003)
@@ -153,35 +161,52 @@ function connectWS() {
 
 // ===== API ENDPOINTS =====
 
-// Lấy lịch sử phiên thu thập được (Hỗ trợ phân trang/giới hạn bằng query ?limit=1000)
 app.get('/api/lichsu', (req, res) => {
   const limit = parseInt(req.query.limit) || 0;
-  if (limit > 0) {
-    return res.json(lichSu.slice(0, limit));
-  }
+  if (limit > 0) return res.json(lichSu.slice(0, limit));
   res.json(lichSu);
 });
 
 app.get('/api/history', (req, res) => {
   const limit = parseInt(req.query.limit) || 0;
-  if (limit > 0) {
-    return res.json(lichSu.slice(0, limit));
-  }
+  if (limit > 0) return res.json(lichSu.slice(0, limit));
   res.json(lichSu);
 });
 
-// Tải file JSON đầy đủ dữ liệu về máy để phân tích
+// Download dữ liệu JSON
 app.get('/api/download', (req, res) => {
   if (fs.existsSync(DATA_FILE)) {
     return res.download(DATA_FILE, `sunwin_history_${Date.now()}.json`);
   }
-  res.status(444).json({ error: 'Chưa có dữ liệu nào được lưu' });
+  res.status(404).json({ error: 'Chưa có dữ liệu nào được lưu' });
 });
 
-// Thống kê tổng số lượng phiên thu thập được
+// Import thủ công file/mảng JSON dữ liệu cũ để phục hồi
+app.post('/api/import', (req, res) => {
+  try {
+    const items = req.body;
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ error: 'Dữ liệu gửi lên phải là 1 mảng các phiên JSON' });
+    }
+    let added = 0;
+    items.forEach(item => {
+      if (item && item.Phien && !lichSuMap.has(item.Phien)) {
+        lichSuMap.set(item.Phien, item);
+        added++;
+      }
+    });
+    saveDataToFile();
+    res.json({ success: true, addedCount: added, totalSessions: lichSu.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Thống kê dữ liệu
 app.get('/api/stats', (req, res) => {
   res.json({
     status: 'ACTIVE',
+    dataFile: DATA_FILE,
     totalSessionsCollected: lichSu.length,
     latestSession: lichSu[0] || null,
     oldestSession: lichSu[lichSu.length - 1] || null,
@@ -191,12 +216,14 @@ app.get('/api/stats', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({
-    message: '🎲 Sunwin Data Collector Service (Thu thập & Lưu trữ dữ liệu)',
+    message: '🎲 Sunwin Data Collector Service',
+    dataFile: DATA_FILE,
     totalSessionsCollected: lichSu.length,
     latestSession: lichSu[0] || null,
     endpoints: {
       history: '/api/lichsu',
       download: '/api/download',
+      import: 'POST /api/import',
       stats: '/api/stats'
     }
   });
@@ -205,5 +232,6 @@ app.get('/', (req, res) => {
 // ===== START SERVER =====
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 Server Thu thập Dữ liệu Sunwin đang chạy tại http://0.0.0.0:${PORT}`);
+  console.log(`📁 Đường dẫn lưu file: ${DATA_FILE}`);
   connectWS();
 });

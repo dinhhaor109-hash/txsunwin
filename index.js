@@ -53,67 +53,60 @@ function syncArrayFromMap() {
 
 loadDataFromFile();
 
-// ===== ULTRA CONTINUOUS & ADAPTIVE STREAK-CAPPER ENGINE =====
-function predictNextSession(historyData, mode = 'continuous', pastLossStreak = 0) {
+// ===== ULTRA DEEP ADAPTIVE PREDICTION ENGINE =====
+function predictNextSession(historyData, mode = 'continuous', pastLossStreak = 0, capLimit = 3) {
   if (historyData.length < 10) return { predict: 'Tài', confidence: 50, note: 'Khởi tạo' };
 
   const chronological = [...historyData].sort((a, b) => a.Phien - b.Phien);
   const h = chronological.map(x => x.Ket_qua);
   const n = h.length;
   const last = h[n - 1];
+  const last2 = n >= 2 ? h[n - 2] : last;
 
-  // Nếu mode = 'capped' và đạt ngưỡng thua -> Tạm dừng 1 tay xả xui
-  if (mode === 'capped' && pastLossStreak >= 3) {
-    return { predict: 'PAUSE', confidence: 0, note: 'Tạm dừng 1 phiên ngắt chuỗi thua (Max 3)' };
+  // Nếu dùng chế độ Smart-Cap và bị sai vượt ngưỡng -> Tạm dừng 1 phiên ngắt nhịp
+  if (mode === 'smart_cap' && pastLossStreak >= capLimit) {
+    return { predict: 'PAUSE', confidence: 0, note: `Tạm dừng 1 phiên ngắt chuỗi thua (Max Cap = ${capLimit})` };
   }
+
+  // Base Predictor (Tay 1)
+  let streak = 1;
+  for (let j = n - 2; j >= 0; j--) {
+    if (h[j] === last) streak++; else break;
+  }
+  let pingpong = (h[n-1] !== h[n-2] && n >= 3 && h[n-2] !== h[n-3]);
+
+  let basePred = last;
+  if (streak >= 3) basePred = last;
+  else if (pingpong) basePred = last === 'Tài' ? 'Xỉu' : 'Tài';
 
   let predict = last;
   let note = '';
 
   if (pastLossStreak === 0) {
-    // Tay 1: Ensemble (Bệt + 1-1 + KNN-4)
-    let streak = 1;
-    for (let j = n - 2; j >= 0; j--) {
-      if (h[j] === last) streak++; else break;
-    }
-    let pingpong = (h[n-1] !== h[n-2] && h[n-2] !== h[n-3] && h[n-3] !== h[n-4]);
-
-    if (streak >= 3) {
-      predict = last;
-      note = `Bệt (${streak} phiên)`;
-    } else if (pingpong) {
-      predict = last === 'Tài' ? 'Xỉu' : 'Tài';
-      note = 'Cầu 1-1';
-    } else {
-      const pat = h.slice(n - 4).join('');
-      let tM = 0, xM = 0;
-      for (let j = 4; j < n - 1; j++) {
-        if (h.slice(j - 4, j).join('') === pat) {
-          if (h[j] === 'Tài') tM++; else xM++;
-        }
-      }
-      if (tM > xM) { predict = 'Tài'; note = 'KNN-4 (Tài)'; }
-      else if (xM > tM) { predict = 'Xỉu'; note = 'KNN-4 (Xỉu)'; }
-      else { predict = last; note = 'Mặc định'; }
-    }
+    predict = basePred;
+    note = `Ensemble (Streak=${streak}, Pingpong=${pingpong})`;
   } else if (pastLossStreak === 1) {
-    // Tay 2: Follow Winner (Theo ngay kết quả vừa ra)
-    predict = last;
-    note = 'Follow Winner (Khắc phục tay sai 1)';
+    // Loss 1: Follow Last2
+    predict = last2;
+    note = 'Adaptive Loss-Recovery Step 1 (Last2)';
   } else if (pastLossStreak === 2) {
-    // Tay 3: Anti-Winner (Đổi nhịp 1-1)
+    // Loss 2: Anti-Last
     predict = last === 'Tài' ? 'Xỉu' : 'Tài';
-    note = 'Anti-Winner (Khắc phục tay sai 2)';
-  } else if (pastLossStreak >= 3) {
-    // Tay 4+: Invert Primary Model (Continuous mode)
+    note = 'Adaptive Loss-Recovery Step 2 (Anti-Last)';
+  } else if (pastLossStreak === 3) {
+    // Loss 3: Anti-Last
     predict = last === 'Tài' ? 'Xỉu' : 'Tài';
-    note = 'Invert Model (Khắc phục tay sai 3+)';
+    note = 'Adaptive Loss-Recovery Step 3 (Anti-Last)';
+  } else {
+    // Loss 4+: Invert Base Model
+    predict = basePred === 'Tài' ? 'Xỉu' : 'Tài';
+    note = `Adaptive Loss-Recovery Step ${pastLossStreak} (Invert Base)`;
   }
 
   return { predict, confidence: 75, note };
 }
 
-function runDatasetSimulation(dataset, windowSize = 100, mode = 'continuous') {
+function runDatasetSimulation(dataset, windowSize = 100, mode = 'continuous', capLimit = 3) {
   const sorted = [...dataset].sort((a, b) => a.Phien - b.Phien);
   let totalBets = 0, correctBets = 0, currentLossStreak = 0, maxLossStreak = 0;
   let streakCounts = {};
@@ -129,7 +122,7 @@ function runDatasetSimulation(dataset, windowSize = 100, mode = 'continuous') {
       continue;
     }
 
-    const pObj = predictNextSession(history, mode, currentLossStreak);
+    const pObj = predictNextSession(history, mode, currentLossStreak, capLimit);
     const predict = pObj.predict;
 
     if (predict === 'PAUSE') {
@@ -151,6 +144,7 @@ function runDatasetSimulation(dataset, windowSize = 100, mode = 'continuous') {
   return {
     windowSize,
     mode,
+    capLimit: mode === 'smart_cap' ? capLimit : 'N/A (100% Continuous)',
     totalSessions: sorted.length - windowSize,
     totalBets,
     correctBets,
@@ -252,13 +246,14 @@ app.get('/api/lichsu', (req, res) => {
   res.json(limit > 0 ? lichSu.slice(0, limit) : lichSu);
 });
 
-// API Dự đoán liên tục 100% không bỏ phiên (mode=continuous) hoặc ngắt chuỗi (mode=capped)
+// API Dự đoán phiên tiếp theo
 app.get('/api/predict', (req, res) => {
-  const mode = req.query.mode || 'continuous'; // 'continuous' hoặc 'capped'
+  const mode = req.query.mode || 'continuous'; // 'continuous' hoặc 'smart_cap'
   const pastLossStreak = parseInt(req.query.lossStreak) || 0;
+  const capLimit = parseInt(req.query.cap) || 3;
   const windowSize = parseInt(req.query.window) || 100;
   const recent = lichSu.slice(0, windowSize);
-  const result = predictNextSession(recent, mode, pastLossStreak);
+  const result = predictNextSession(recent, mode, pastLossStreak, capLimit);
   const nextPhien = lichSu.length > 0 ? lichSu[0].Phien + 1 : 1;
   res.json({
     phienTiepTheo: nextPhien,
@@ -272,8 +267,9 @@ app.get('/api/predict', (req, res) => {
 
 app.get('/api/simulate', (req, res) => {
   const mode = req.query.mode || 'continuous';
+  const cap = parseInt(req.query.cap) || 3;
   const window = parseInt(req.query.window) || 100;
-  const resSim = runDatasetSimulation(lichSu, window, mode);
+  const resSim = runDatasetSimulation(lichSu, window, mode, cap);
   res.json(resSim);
 });
 
@@ -311,7 +307,7 @@ app.get('/api/stats', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({
-    message: '🎲 Sunwin Data Collector & Continuous Adaptive AI Engine',
+    message: '🎲 Sunwin Data Collector & Ultra Deep Loss-Inversion AI',
     totalSessionsCollected: lichSu.length,
     latestSession: lichSu[0] || null,
     endpoints: {

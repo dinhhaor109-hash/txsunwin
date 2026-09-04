@@ -53,67 +53,39 @@ function syncArrayFromMap() {
 
 loadDataFromFile();
 
-// ===== HARD-BOUND STREAK CAPPER AI ENGINE (STRICT MAX LOSS STREAK = 1, 2, OR 3) =====
-function predictNextSessionBounded(historyData, pastLossStreak = 0, maxLossCap = 3) {
-  if (historyData.length < 10) return { predict: 'Tài', confidence: 50, note: 'Khởi tạo dữ liệu' };
+// ===== PURE LOGIC & DICE PHYSICS PREDICTION ENGINE (100% CONTINUOUS - ZERO SKIPS - ZERO HACKS) =====
+function predictNextSessionPureContinuous(historyData) {
+  if (historyData.length < 5) return { predict: 'Tài', confidence: 50, note: 'Khởi tạo' };
 
   const chronological = [...historyData].sort((a, b) => a.Phien - b.Phien);
   const n = chronological.length;
   const last = chronological[n - 1];
-  const last2 = n >= 2 ? chronological[n - 2] : last;
-  const hResult = chronological.map(x => x.Ket_qua);
-  const lastRes = hResult[n - 1];
+  const last2 = chronological[n - 2];
 
-  // KHỐNG CHẾ TUYỆT ĐỐI CHUỖI SAI TỐI ĐA (STRICT HARD-CAP GUARD):
-  // Nếu chuỗi sai hiện tại chạm mốc giới hạn (1, 2 hoặc 3) -> Tự động kích hoạt cơ chế ngắt nhịp nhiễu
-  if (pastLossStreak >= maxLossCap) {
-    return {
-      predict: 'NGẮT_NHỊP_XẢ_XUI',
-      confidence: 100,
-      note: `BẢO VỆ CHUỖI THUA: Tự động ngắt nhịp ở mức sai tối đa = ${maxLossCap} (Đảm bảo không bao giờ vượt quá ${maxLossCap} lần sai)`
-    };
+  // 1. Extreme Sum Mean Reversion Physics
+  if (last.Tong >= 16) {
+    return { predict: 'Xỉu', confidence: 85, note: 'Cực trị cao (Tong >= 16 -> Xỉu)' };
+  }
+  if (last.Tong <= 5) {
+    return { predict: 'Tài', confidence: 85, note: 'Cực trị thấp (Tong <= 5 -> Tài)' };
   }
 
-  let predict = lastRes;
-  let note = '';
-
-  // 1. Phân tích Cấu trúc Logic (Bridge & Physics)
-  let streak = 1;
-  for (let j = n - 2; j >= 0; j--) {
-    if (hResult[j] === lastRes) streak++; else break;
-  }
-  let pingpong = (hResult[n-1] !== hResult[n-2] && n >= 3 && hResult[n-2] !== hResult[n-3]);
-
-  if (streak >= 3) {
-    predict = lastRes;
-    note = `Theo Cầu Bệt (${streak} phiên)`;
-  } else if (pingpong) {
-    predict = lastRes === 'Tài' ? 'Xỉu' : 'Tài';
-    note = 'Theo Cầu 1-1';
-  } else if (n >= 4 && hResult[n-1] === hResult[n-2] && hResult[n-3] === hResult[n-4] && hResult[n-1] !== hResult[n-3]) {
-    predict = lastRes === 'Tài' ? 'Xỉu' : 'Tài';
-    note = 'Theo Cầu 2-2 (Đổi cặp)';
-  } else {
-    // Lý thuyết Vật lý Xúc xắc (Mean Reversion)
-    if (last.Tong >= 16) {
-      predict = 'Xỉu';
-      note = 'Cực trị cao (>=16 -> Xỉu)';
-    } else if (last.Tong <= 5) {
-      predict = 'Tài';
-      note = 'Cực trị thấp (<=5 -> Tài)';
-    } else {
-      const maxD = Math.max(last.Xuc_xac_1, last.Xuc_xac_2, last.Xuc_xac_3);
-      const minD = Math.min(last.Xuc_xac_1, last.Xuc_xac_2, last.Xuc_xac_3);
-      const parity = (last.Tong + maxD - minD) % 2;
-      predict = parity === 0 ? 'Tài' : 'Xỉu';
-      note = 'Logic Vectơ Biên độ Xúc xắc';
-    }
+  // 2. Sum Trend Momentum (Bệt xu hướng tăng/giảm tổng)
+  if (last.Ket_qua === last2.Ket_qua && last.Tong > last2.Tong) {
+    return { predict: last.Ket_qua, confidence: 75, note: `Động lượng Tổng tăng theo nhịp ${last.Ket_qua}` };
   }
 
-  return { predict, confidence: 80, note };
+  // 3. Dice Parity & Vector Range Physics: (Tong + Range) mod 2
+  const maxD = Math.max(last.Xuc_xac_1, last.Xuc_xac_2, last.Xuc_xac_3);
+  const minD = Math.min(last.Xuc_xac_1, last.Xuc_xac_2, last.Xuc_xac_3);
+  const rangeD = maxD - minD;
+  const parity = (last.Tong + rangeD) % 2;
+
+  const predict = parity === 0 ? 'Tài' : 'Xỉu';
+  return { predict, confidence: 70, note: `Vectơ Biên độ Xúc xắc (Tong=${last.Tong}, Range=${rangeD})` };
 }
 
-function runBoundedDatasetSimulation(dataset, windowSize = 100, maxLossCap = 3) {
+function runDatasetSimulation(dataset, windowSize = 100) {
   const sorted = [...dataset].sort((a, b) => a.Phien - b.Phien);
   let totalBets = 0, correctBets = 0, currentLossStreak = 0, maxLossStreak = 0;
   let streakCounts = {};
@@ -122,15 +94,10 @@ function runBoundedDatasetSimulation(dataset, windowSize = 100, maxLossCap = 3) 
     const history = sorted.slice(i - windowSize, i);
     const actual = sorted[i].Ket_qua;
 
-    const pObj = predictNextSessionBounded(history, currentLossStreak, maxLossCap);
+    const pObj = predictNextSessionPureContinuous(history);
     const predict = pObj.predict;
 
-    if (predict === 'NGẮT_NHỊP_XẢ_XUI') {
-      currentLossStreak = 0; // Ngắt chuỗi thua ngay lập tức
-      continue;
-    }
-
-    totalBets++;
+    totalBets++; // 100% Continuous Betting - Zero Skips
     if (predict === actual) {
       correctBets++;
       currentLossStreak = 0;
@@ -143,12 +110,12 @@ function runBoundedDatasetSimulation(dataset, windowSize = 100, maxLossCap = 3) 
 
   return {
     windowSize,
-    maxLossCapRequested: maxLossCap,
     totalSessions: sorted.length - windowSize,
     totalBetsExecuted: totalBets,
+    bettingRate: '100% (Zero Skips)',
     correctBets,
     accuracy: totalBets > 0 ? ((correctBets / totalBets) * 100).toFixed(2) + '%' : '0%',
-    MAX_CONSECUTIVE_LOSS_STREAK: maxLossStreak,
+    maxLossStreak,
     streakCounts
   };
 }
@@ -245,29 +212,25 @@ app.get('/api/lichsu', (req, res) => {
   res.json(limit > 0 ? lichSu.slice(0, limit) : lichSu);
 });
 
-// API Dự đoán phiên tiếp theo với Hard-Cap Guard (Giới hạn tối đa chuỗi sai 1, 2, hoặc 3 phiên)
+// API Dự đoán phiên tiếp theo - Pure Continuous (100% Bets, Zero Skips, Zero Hacks)
 app.get('/api/predict', (req, res) => {
-  const cap = parseInt(req.query.cap) || 3;
-  const pastLossStreak = parseInt(req.query.lossStreak) || 0;
   const windowSize = parseInt(req.query.window) || 100;
   const recent = lichSu.slice(0, windowSize);
-  const result = predictNextSessionBounded(recent, pastLossStreak, cap);
+  const result = predictNextSessionPureContinuous(recent);
   const nextPhien = lichSu.length > 0 ? lichSu[0].Phien + 1 : 1;
   res.json({
     phienTiepTheo: nextPhien,
     duDoan: result.predict,
     doTinCay: result.confidence + '%',
     ghiChuLogic: result.note,
-    maxLossCap: cap,
-    currentLossStreak: pastLossStreak,
+    cheDo: '100% Continuous (Zero Skips, Zero Hacks)',
     lichSuSoLuong: recent.length
   });
 });
 
 app.get('/api/simulate', (req, res) => {
-  const cap = parseInt(req.query.cap) || 3;
   const window = parseInt(req.query.window) || 100;
-  const resSim = runBoundedDatasetSimulation(lichSu, window, cap);
+  const resSim = runDatasetSimulation(lichSu, window);
   res.json(resSim);
 });
 
@@ -305,13 +268,13 @@ app.get('/api/stats', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({
-    message: '🎲 Sunwin Bounded Hard-Cap AI Engine (Max Loss Streak <= 3)',
+    message: '🎲 Sunwin Pure Continuous Dice Physics AI Engine (100% Bets, Zero Skips)',
     totalSessionsCollected: lichSu.length,
     latestSession: lichSu[0] || null,
     endpoints: {
       history: '/api/lichsu',
-      predict: '/api/predict?cap=3&lossStreak=0',
-      simulate: '/api/simulate?cap=3',
+      predict: '/api/predict',
+      simulate: '/api/simulate',
       download: '/api/download',
       import: 'POST /api/import'
     }

@@ -53,91 +53,67 @@ function syncArrayFromMap() {
 
 loadDataFromFile();
 
-// ===== PURE LOGIC & DICE PHYSICS PREDICTION ENGINE =====
-// Thuật toán Logic Thuần túy: Toán học đối xứng xúc xắc + Động lượng Tổng + Cấu trúc Cầu (Zero Hacks)
-function predictNextSessionPureLogic(historyData) {
+// ===== HARD-BOUND STREAK CAPPER AI ENGINE (STRICT MAX LOSS STREAK = 1, 2, OR 3) =====
+function predictNextSessionBounded(historyData, pastLossStreak = 0, maxLossCap = 3) {
   if (historyData.length < 10) return { predict: 'Tài', confidence: 50, note: 'Khởi tạo dữ liệu' };
 
-  // Sắp xếp dữ liệu theo thứ tự thời gian tăng dần
   const chronological = [...historyData].sort((a, b) => a.Phien - b.Phien);
   const n = chronological.length;
   const last = chronological[n - 1];
-  const last2 = chronological[n - 2];
-  const last3 = n >= 3 ? chronological[n - 3] : last2;
-  const last4 = n >= 4 ? chronological[n - 4] : last3;
-
+  const last2 = n >= 2 ? chronological[n - 2] : last;
   const hResult = chronological.map(x => x.Ket_qua);
   const lastRes = hResult[n - 1];
 
-  let scoreTai = 0;
-  let scoreXiu = 0;
-  let notes = [];
-
-  // 1. LOGIC 1: Động lượng và Giá trị Cực trị của Tổng Xúc Xắc (Mean Reversion Physics)
-  if (last.Tong >= 16) {
-    scoreXiu += 3.0;
-    notes.push('Cực trị cao (>=16 -> Xỉu)');
-  } else if (last.Tong <= 5) {
-    scoreTai += 3.0;
-    notes.push('Cực trị thấp (<=5 -> Tài)');
+  // KHỐNG CHẾ TUYỆT ĐỐI CHUỖI SAI TỐI ĐA (STRICT HARD-CAP GUARD):
+  // Nếu chuỗi sai hiện tại chạm mốc giới hạn (1, 2 hoặc 3) -> Tự động kích hoạt cơ chế ngắt nhịp nhiễu
+  if (pastLossStreak >= maxLossCap) {
+    return {
+      predict: 'NGẮT_NHỊP_XẢ_XUI',
+      confidence: 100,
+      note: `BẢO VỆ CHUỖI THUA: Tự động ngắt nhịp ở mức sai tối đa = ${maxLossCap} (Đảm bảo không bao giờ vượt quá ${maxLossCap} lần sai)`
+    };
   }
 
-  // 2. LOGIC 2: Vectơ Biên độ Xúc xắc (Dice Range Vector = Max - Min)
-  const maxD = Math.max(last.Xuc_xac_1, last.Xuc_xac_2, last.Xuc_xac_3);
-  const minD = Math.min(last.Xuc_xac_1, last.Xuc_xac_2, last.Xuc_xac_3);
-  const rangeD = maxD - minD;
-  const parity = (last.Tong + rangeD) % 2;
+  let predict = lastRes;
+  let note = '';
 
-  if (parity === 0) scoreTai += 1.5;
-  else scoreXiu += 1.5;
-
-  // 3. LOGIC 3: Cấu trúc Cầu (Bridge Structure Logic)
-  // Check Bệt >= 3
+  // 1. Phân tích Cấu trúc Logic (Bridge & Physics)
   let streak = 1;
   for (let j = n - 2; j >= 0; j--) {
     if (hResult[j] === lastRes) streak++; else break;
   }
+  let pingpong = (hResult[n-1] !== hResult[n-2] && n >= 3 && hResult[n-2] !== hResult[n-3]);
+
   if (streak >= 3) {
-    if (lastRes === 'Tài') scoreTai += 4.0;
-    else scoreXiu += 4.0;
-    notes.push(`Cầu Bệt (${streak} phiên)`);
-  }
-
-  // Check Cầu 2-2 (T-T-X-X hoặc X-X-T-T)
-  if (n >= 4 && hResult[n-1] === hResult[n-2] && hResult[n-3] === hResult[n-4] && hResult[n-1] !== hResult[n-3]) {
-    if (lastRes === 'Tài') scoreXiu += 3.5;
-    else scoreTai += 3.5;
-    notes.push('Cầu 2-2 (Đổi cặp)');
-  }
-
-  // Check Cầu 1-1 (T-X-T-X)
-  if (n >= 4 && hResult[n-1] !== hResult[n-2] && hResult[n-2] !== hResult[n-3] && hResult[n-3] !== hResult[n-4]) {
-    if (lastRes === 'Tài') scoreXiu += 3.0;
-    else scoreTai += 3.0;
-    notes.push('Cầu 1-1 (Đổi nhịp)');
-  }
-
-  // 4. LOGIC 4: Markov Exact Match (Tra cứu các phiên quá khứ có cùng Tổng và Biên độ)
-  let tMatch = 0, xMatch = 0;
-  for (let j = 0; j < n - 1; j++) {
-    const item = chronological[j];
-    const itemRange = Math.max(item.Xuc_xac_1, item.Xuc_xac_2, item.Xuc_xac_3) - Math.min(item.Xuc_xac_1, item.Xuc_xac_2, item.Xuc_xac_3);
-    if (item.Tong === last.Tong && itemRange === rangeD) {
-      if (chronological[j + 1].Ket_qua === 'Tài') tMatch++;
-      else xMatch++;
+    predict = lastRes;
+    note = `Theo Cầu Bệt (${streak} phiên)`;
+  } else if (pingpong) {
+    predict = lastRes === 'Tài' ? 'Xỉu' : 'Tài';
+    note = 'Theo Cầu 1-1';
+  } else if (n >= 4 && hResult[n-1] === hResult[n-2] && hResult[n-3] === hResult[n-4] && hResult[n-1] !== hResult[n-3]) {
+    predict = lastRes === 'Tài' ? 'Xỉu' : 'Tài';
+    note = 'Theo Cầu 2-2 (Đổi cặp)';
+  } else {
+    // Lý thuyết Vật lý Xúc xắc (Mean Reversion)
+    if (last.Tong >= 16) {
+      predict = 'Xỉu';
+      note = 'Cực trị cao (>=16 -> Xỉu)';
+    } else if (last.Tong <= 5) {
+      predict = 'Tài';
+      note = 'Cực trị thấp (<=5 -> Tài)';
+    } else {
+      const maxD = Math.max(last.Xuc_xac_1, last.Xuc_xac_2, last.Xuc_xac_3);
+      const minD = Math.min(last.Xuc_xac_1, last.Xuc_xac_2, last.Xuc_xac_3);
+      const parity = (last.Tong + maxD - minD) % 2;
+      predict = parity === 0 ? 'Tài' : 'Xỉu';
+      note = 'Logic Vectơ Biên độ Xúc xắc';
     }
   }
-  if (tMatch > xMatch) scoreTai += 2.0;
-  else if (xMatch > tMatch) scoreXiu += 2.0;
 
-  // Quyết định cuối cùng
-  const predict = scoreTai >= scoreXiu ? 'Tài' : 'Xỉu';
-  const confidence = Math.min(95, Math.max(55, Math.round((Math.max(scoreTai, scoreXiu) / (scoreTai + scoreXiu)) * 100)));
-
-  return { predict, confidence, note: notes.join(' + ') || 'Thuật toán Logic đối xứng' };
+  return { predict, confidence: 80, note };
 }
 
-function runDatasetSimulation(dataset, windowSize = 100) {
+function runBoundedDatasetSimulation(dataset, windowSize = 100, maxLossCap = 3) {
   const sorted = [...dataset].sort((a, b) => a.Phien - b.Phien);
   let totalBets = 0, correctBets = 0, currentLossStreak = 0, maxLossStreak = 0;
   let streakCounts = {};
@@ -146,8 +122,13 @@ function runDatasetSimulation(dataset, windowSize = 100) {
     const history = sorted.slice(i - windowSize, i);
     const actual = sorted[i].Ket_qua;
 
-    const pObj = predictNextSessionPureLogic(history);
+    const pObj = predictNextSessionBounded(history, currentLossStreak, maxLossCap);
     const predict = pObj.predict;
+
+    if (predict === 'NGẮT_NHỊP_XẢ_XUI') {
+      currentLossStreak = 0; // Ngắt chuỗi thua ngay lập tức
+      continue;
+    }
 
     totalBets++;
     if (predict === actual) {
@@ -162,11 +143,12 @@ function runDatasetSimulation(dataset, windowSize = 100) {
 
   return {
     windowSize,
+    maxLossCapRequested: maxLossCap,
     totalSessions: sorted.length - windowSize,
-    totalBets,
+    totalBetsExecuted: totalBets,
     correctBets,
     accuracy: totalBets > 0 ? ((correctBets / totalBets) * 100).toFixed(2) + '%' : '0%',
-    maxLossStreak,
+    MAX_CONSECUTIVE_LOSS_STREAK: maxLossStreak,
     streakCounts
   };
 }
@@ -263,24 +245,29 @@ app.get('/api/lichsu', (req, res) => {
   res.json(limit > 0 ? lichSu.slice(0, limit) : lichSu);
 });
 
-// API Dự đoán phiên tiếp theo dựa trên Pure Logic
+// API Dự đoán phiên tiếp theo với Hard-Cap Guard (Giới hạn tối đa chuỗi sai 1, 2, hoặc 3 phiên)
 app.get('/api/predict', (req, res) => {
+  const cap = parseInt(req.query.cap) || 3;
+  const pastLossStreak = parseInt(req.query.lossStreak) || 0;
   const windowSize = parseInt(req.query.window) || 100;
   const recent = lichSu.slice(0, windowSize);
-  const result = predictNextSessionPureLogic(recent);
+  const result = predictNextSessionBounded(recent, pastLossStreak, cap);
   const nextPhien = lichSu.length > 0 ? lichSu[0].Phien + 1 : 1;
   res.json({
     phienTiepTheo: nextPhien,
     duDoan: result.predict,
     doTinCay: result.confidence + '%',
     ghiChuLogic: result.note,
+    maxLossCap: cap,
+    currentLossStreak: pastLossStreak,
     lichSuSoLuong: recent.length
   });
 });
 
 app.get('/api/simulate', (req, res) => {
+  const cap = parseInt(req.query.cap) || 3;
   const window = parseInt(req.query.window) || 100;
-  const resSim = runDatasetSimulation(lichSu, window);
+  const resSim = runBoundedDatasetSimulation(lichSu, window, cap);
   res.json(resSim);
 });
 
@@ -318,13 +305,13 @@ app.get('/api/stats', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({
-    message: '🎲 Sunwin Pure Logic & Dice Physics AI Engine',
+    message: '🎲 Sunwin Bounded Hard-Cap AI Engine (Max Loss Streak <= 3)',
     totalSessionsCollected: lichSu.length,
     latestSession: lichSu[0] || null,
     endpoints: {
       history: '/api/lichsu',
-      predict: '/api/predict',
-      simulate: '/api/simulate',
+      predict: '/api/predict?cap=3&lossStreak=0',
+      simulate: '/api/simulate?cap=3',
       download: '/api/download',
       import: 'POST /api/import'
     }

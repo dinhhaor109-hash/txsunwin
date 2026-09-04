@@ -10,7 +10,6 @@ app.use((req, res, next) => { res.header('Access-Control-Allow-Origin', '*'); ne
 
 const PORT = process.env.PORT || 3001;
 
-// Hỗ trợ Railway Volume
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 if (!fs.existsSync(DATA_DIR)) {
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch(e){}
@@ -23,7 +22,6 @@ let lichSu = [];
 let currentSessionId = null;
 let ws = null, pingInterval = null, reconnectTimeout = null, staleTimer = null;
 
-// Khôi phục dữ liệu
 function loadDataFromFile() {
   try {
     if (fs.existsSync(DATA_FILE)) {
@@ -39,18 +37,14 @@ function loadDataFromFile() {
         }
       }
     }
-  } catch (e) {
-    console.error('[❌] Lỗi đọc file data:', e.message);
-  }
+  } catch (e) { console.error('[❌] Lỗi đọc file data:', e.message); }
 }
 
 function saveDataToFile() {
   try {
     syncArrayFromMap();
     fs.writeFileSync(DATA_FILE, JSON.stringify(lichSu, null, 2), 'utf-8');
-  } catch (e) {
-    console.error('[❌] Lỗi ghi file data:', e.message);
-  }
+  } catch (e) { console.error('[❌] Lỗi ghi file data:', e.message); }
 }
 
 function syncArrayFromMap() {
@@ -59,37 +53,34 @@ function syncArrayFromMap() {
 
 loadDataFromFile();
 
-// ===== ADAPTIVE STREAK-CAPPER PREDICTION ENGINE =====
-// Thuật toán kiểm soát chuỗi sai tối đa 1, 2 hoặc 3 phiên
-function predictNextSession(historyData, maxLossCap = 3, pastLossStreak = 0) {
+// ===== ULTRA CONTINUOUS & ADAPTIVE STREAK-CAPPER ENGINE =====
+function predictNextSession(historyData, mode = 'continuous', pastLossStreak = 0) {
   if (historyData.length < 10) return { predict: 'Tài', confidence: 50, note: 'Khởi tạo' };
 
-  // Dữ liệu sắp xếp từ quá khứ đến hiện tại
   const chronological = [...historyData].sort((a, b) => a.Phien - b.Phien);
   const h = chronological.map(x => x.Ket_qua);
   const n = h.length;
   const last = h[n - 1];
 
-  // Nếu quá chuỗi sai cho phép -> Tạm dừng ngắt chuỗi sai
-  if (pastLossStreak >= maxLossCap) {
-    return { predict: 'PAUSE', confidence: 0, note: `Tạm dừng ngắt chuỗi sai (Đã đạt max ${maxLossCap} sai)` };
+  // Nếu mode = 'capped' và đạt ngưỡng thua -> Tạm dừng 1 tay xả xui
+  if (mode === 'capped' && pastLossStreak >= 3) {
+    return { predict: 'PAUSE', confidence: 0, note: 'Tạm dừng 1 phiên ngắt chuỗi thua (Max 3)' };
   }
 
   let predict = last;
   let note = '';
 
   if (pastLossStreak === 0) {
-    // Tay 1: Base Ensemble Pattern (Bệt -> 1-1 -> KNN-4)
+    // Tay 1: Ensemble (Bệt + 1-1 + KNN-4)
     let streak = 1;
     for (let j = n - 2; j >= 0; j--) {
-      if (h[j] === last) streak++;
-      else break;
+      if (h[j] === last) streak++; else break;
     }
     let pingpong = (h[n-1] !== h[n-2] && h[n-2] !== h[n-3] && h[n-3] !== h[n-4]);
 
     if (streak >= 3) {
       predict = last;
-      note = `Cầu Bệt (${streak} phiên)`;
+      note = `Bệt (${streak} phiên)`;
     } else if (pingpong) {
       predict = last === 'Tài' ? 'Xỉu' : 'Tài';
       note = 'Cầu 1-1';
@@ -98,42 +89,39 @@ function predictNextSession(historyData, maxLossCap = 3, pastLossStreak = 0) {
       let tM = 0, xM = 0;
       for (let j = 4; j < n - 1; j++) {
         if (h.slice(j - 4, j).join('') === pat) {
-          if (h[j] === 'Tài') tM++;
-          else xM++;
+          if (h[j] === 'Tài') tM++; else xM++;
         }
       }
-      if (tM > xM) { predict = 'Tài'; note = 'KNN Matching (Tài)'; }
-      else if (xM > tM) { predict = 'Xỉu'; note = 'KNN Matching (Xỉu)'; }
+      if (tM > xM) { predict = 'Tài'; note = 'KNN-4 (Tài)'; }
+      else if (xM > tM) { predict = 'Xỉu'; note = 'KNN-4 (Xỉu)'; }
       else { predict = last; note = 'Mặc định'; }
     }
   } else if (pastLossStreak === 1) {
-    // Tay 2 (Vừa thua tay 1): Follow Winner
+    // Tay 2: Follow Winner (Theo ngay kết quả vừa ra)
     predict = last;
-    note = 'Adaptive Follow-Winner (Khắc phục tay sai 1)';
+    note = 'Follow Winner (Khắc phục tay sai 1)';
   } else if (pastLossStreak === 2) {
-    // Tay 3 (Vừa thua tay 2): Counter-Shift
+    // Tay 3: Anti-Winner (Đổi nhịp 1-1)
     predict = last === 'Tài' ? 'Xỉu' : 'Tài';
-    note = 'Adaptive Counter-Shift (Khắc phục tay sai 2)';
+    note = 'Anti-Winner (Khắc phục tay sai 2)';
+  } else if (pastLossStreak >= 3) {
+    // Tay 4+: Invert Primary Model (Continuous mode)
+    predict = last === 'Tài' ? 'Xỉu' : 'Tài';
+    note = 'Invert Model (Khắc phục tay sai 3+)';
   }
 
   return { predict, confidence: 75, note };
 }
 
-// SIMULATOR TRÊN TOÀN BỘ BỘ DỮ LIỆU KHI CÓ YÊU CẦU
-function runDatasetSimulation(dataset, windowSize = 100, maxLossCap = 3) {
+function runDatasetSimulation(dataset, windowSize = 100, mode = 'continuous') {
   const sorted = [...dataset].sort((a, b) => a.Phien - b.Phien);
-  let totalBets = 0;
-  let correctBets = 0;
-  let currentLossStreak = 0;
-  let maxLossStreak = 0;
+  let totalBets = 0, correctBets = 0, currentLossStreak = 0, maxLossStreak = 0;
   let streakCounts = {};
   let isPaused = false;
 
   for (let i = windowSize; i < sorted.length; i++) {
     const history = sorted.slice(i - windowSize, i);
     const actual = sorted[i].Ket_qua;
-    const h = history.map(x => x.Ket_qua);
-    const last = h[h.length - 1];
 
     if (isPaused) {
       isPaused = false;
@@ -141,12 +129,7 @@ function runDatasetSimulation(dataset, windowSize = 100, maxLossCap = 3) {
       continue;
     }
 
-    if (currentLossStreak >= maxLossCap) {
-      isPaused = true;
-      continue;
-    }
-
-    const pObj = predictNextSession(history, maxLossCap, currentLossStreak);
+    const pObj = predictNextSession(history, mode, currentLossStreak);
     const predict = pObj.predict;
 
     if (predict === 'PAUSE') {
@@ -167,7 +150,7 @@ function runDatasetSimulation(dataset, windowSize = 100, maxLossCap = 3) {
 
   return {
     windowSize,
-    maxLossCap,
+    mode,
     totalSessions: sorted.length - windowSize,
     totalBets,
     correctBets,
@@ -177,7 +160,7 @@ function runDatasetSimulation(dataset, windowSize = 100, maxLossCap = 3) {
   };
 }
 
-// ===== WEBSOCKET CONNECT =====
+// ===== WEBSOCKET =====
 const WS_URL = "wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg9ZFtbx3rRu9mX_hZMZ_m5gMNhkw0";
 const WS_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -269,28 +252,28 @@ app.get('/api/lichsu', (req, res) => {
   res.json(limit > 0 ? lichSu.slice(0, limit) : lichSu);
 });
 
-// API Dự đoán phiên tiếp theo với thuộc tính maxLossCap (mặc định = 3)
+// API Dự đoán liên tục 100% không bỏ phiên (mode=continuous) hoặc ngắt chuỗi (mode=capped)
 app.get('/api/predict', (req, res) => {
-  const maxLossCap = parseInt(req.query.cap) || 3;
+  const mode = req.query.mode || 'continuous'; // 'continuous' hoặc 'capped'
   const pastLossStreak = parseInt(req.query.lossStreak) || 0;
   const windowSize = parseInt(req.query.window) || 100;
   const recent = lichSu.slice(0, windowSize);
-  const result = predictNextSession(recent, maxLossCap, pastLossStreak);
+  const result = predictNextSession(recent, mode, pastLossStreak);
   const nextPhien = lichSu.length > 0 ? lichSu[0].Phien + 1 : 1;
   res.json({
     phienTiepTheo: nextPhien,
     duDoan: result.predict,
     ghiChu: result.note,
-    maxLossStreakCap: maxLossCap,
+    mode: mode,
+    pastLossStreak: pastLossStreak,
     lichSuSoLuong: recent.length
   });
 });
 
-// API Chạy mô phỏng kiểm tra thuật toán trên toàn bộ dữ liệu hiện có
 app.get('/api/simulate', (req, res) => {
-  const cap = parseInt(req.query.cap) || 3;
+  const mode = req.query.mode || 'continuous';
   const window = parseInt(req.query.window) || 100;
-  const resSim = runDatasetSimulation(lichSu, window, cap);
+  const resSim = runDatasetSimulation(lichSu, window, mode);
   res.json(resSim);
 });
 
@@ -304,7 +287,7 @@ app.get('/api/download', (req, res) => {
 app.post('/api/import', (req, res) => {
   try {
     const items = req.body;
-    if (!Array.isArray(items)) return res.status(400).json({ error: 'Dữ liệu gửi lên phải là 1 mảng JSON' });
+    if (!Array.isArray(items)) return res.status(400).json({ error: 'Dữ liệu phải là 1 mảng JSON' });
     let added = 0;
     items.forEach(item => {
       if (item && item.Phien && !lichSuMap.has(item.Phien)) {
@@ -328,13 +311,13 @@ app.get('/api/stats', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({
-    message: '🎲 Sunwin Data Collector & Adaptive Streak-Capper AI',
+    message: '🎲 Sunwin Data Collector & Continuous Adaptive AI Engine',
     totalSessionsCollected: lichSu.length,
     latestSession: lichSu[0] || null,
     endpoints: {
       history: '/api/lichsu',
-      predict: '/api/predict?cap=3&lossStreak=0',
-      simulate: '/api/simulate?cap=3&window=100',
+      predict: '/api/predict?mode=continuous&lossStreak=0',
+      simulate: '/api/simulate?mode=continuous',
       download: '/api/download',
       import: 'POST /api/import'
     }
